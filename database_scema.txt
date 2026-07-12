@@ -1,0 +1,220 @@
+CREATE DATABASE IF NOT EXISTS assetflow_db;
+USE assetflow_db;
+
+-- ============================================================================
+-- 1. ORGANIZATION & USERS
+-- ============================================================================
+
+CREATE TABLE departments (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    parent_department_id INT NULL,
+    status ENUM('Active', 'Inactive') DEFAULT 'Active',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (parent_department_id) REFERENCES departments(id) ON DELETE SET NULL
+);
+
+CREATE TABLE employees (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(150) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    department_id INT NULL,
+    role ENUM('Admin', 'Asset Manager', 'Department Head', 'Employee') DEFAULT 'Employee',
+    status ENUM('Active', 'Inactive') DEFAULT 'Active',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE SET NULL
+);
+
+-- Set department head constraints safely via bridge table or column
+ALTER TABLE departments ADD COLUMN head_employee_id INT NULL;
+ALTER TABLE departments ADD FOREIGN KEY (head_employee_id) REFERENCES employees(id) ON DELETE SET NULL;
+
+
+-- ============================================================================
+-- 2. ASSETS & CATEGORIES
+-- ============================================================================
+
+CREATE TABLE asset_categories (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- For dynamic category-specific fields (e.g., warranty_period)
+CREATE TABLE asset_category_fields (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    category_id INT NOT NULL,
+    field_name VARCHAR(100) NOT NULL,
+    field_type ENUM('String', 'Number', 'Date') DEFAULT 'String',
+    FOREIGN KEY (category_id) REFERENCES asset_categories(id) ON DELETE CASCADE
+);
+
+CREATE TABLE assets (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asset_tag VARCHAR(50) NOT NULL UNIQUE, -- e.g., AF-0001
+    name VARCHAR(150) NOT NULL,
+    category_id INT NOT NULL,
+    serial_number VARCHAR(100) NOT NULL UNIQUE,
+    acquisition_date DATE NOT NULL,
+    acquisition_cost DECIMAL(12, 2) NOT NULL, 
+    `condition` VARCHAR(100) NOT NULL,
+    location VARCHAR(150) NOT NULL,
+    is_shared_bookable BOOLEAN DEFAULT FALSE,
+    lifecycle_status ENUM('Available', 'Allocated', 'Reserved', 'Under Maintenance', 'Lost', 'Retired', 'Disposed') DEFAULT 'Available',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (category_id) REFERENCES asset_categories(id)
+);
+
+-- Dynamic metadata storage for custom fields
+CREATE TABLE asset_field_values (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asset_id INT NOT NULL,
+    field_id INT NOT NULL,
+    field_value TEXT NOT NULL,
+    FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE,
+    FOREIGN KEY (field_id) REFERENCES asset_category_fields(id) ON DELETE CASCADE
+);
+
+
+-- ============================================================================
+-- 3. ALLOCATIONS & TRANSFERS
+-- ============================================================================
+
+CREATE TABLE asset_allocations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asset_id INT NOT NULL,
+    employee_id INT NULL,       -- Allocated to employee OR
+    department_id INT NULL,     -- Allocated to department directly
+    allocated_by INT NOT NULL,
+    expected_return_date DATE NULL,
+    returned_date DATE NULL,
+    check_in_notes TEXT NULL,
+    status ENUM('Active', 'Returned', 'Transferred') DEFAULT 'Active',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (asset_id) REFERENCES assets(id),
+    FOREIGN KEY (employee_id) REFERENCES employees(id),
+    FOREIGN KEY (department_id) REFERENCES departments(id),
+    FOREIGN KEY (allocated_by) REFERENCES employees(id)
+);
+
+CREATE TABLE transfer_requests (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asset_id INT NOT NULL,
+    current_holder_id INT NOT NULL, -- Employee trying to transfer from
+    target_employee_id INT NULL,
+    target_department_id INT NULL,
+    requested_by INT NOT NULL,
+    approved_by INT NULL,
+    status ENUM('Requested', 'Approved', 'Rejected') DEFAULT 'Requested',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (asset_id) REFERENCES assets(id),
+    FOREIGN KEY (current_holder_id) REFERENCES employees(id),
+    FOREIGN KEY (target_employee_id) REFERENCES employees(id),
+    FOREIGN KEY (target_department_id) REFERENCES departments(id),
+    FOREIGN KEY (requested_by) REFERENCES employees(id),
+    FOREIGN KEY (approved_by) REFERENCES employees(id)
+);
+
+
+-- ============================================================================
+-- 4. SHARED RESOURCE BOOKINGS
+-- ============================================================================
+
+CREATE TABLE resource_bookings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asset_id INT NOT NULL, -- Asset where is_shared_bookable = TRUE
+    booked_by INT NOT NULL,
+    booking_start DATETIME NOT NULL,
+    booking_end DATETIME NOT NULL,
+    status ENUM('Upcoming', 'Ongoing', 'Completed', 'Cancelled') DEFAULT 'Upcoming',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (asset_id) REFERENCES assets(id),
+    FOREIGN KEY (booked_by) REFERENCES employees(id)
+);
+
+
+-- ============================================================================
+-- 5. MAINTENANCE & AUDITS
+-- ============================================================================
+
+CREATE TABLE maintenance_requests (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asset_id INT NOT NULL,
+    description TEXT NOT NULL,
+    priority ENUM('Low', 'Medium', 'High', 'Critical') DEFAULT 'Medium',
+    photo_url VARCHAR(255) NULL,
+    status ENUM('Pending', 'Approved', 'Rejected', 'Technician Assigned', 'In Progress', 'Resolved') DEFAULT 'Pending',
+    raised_by INT NOT NULL,
+    reviewed_by INT NULL,
+    technician_name VARCHAR(100) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (asset_id) REFERENCES assets(id),
+    FOREIGN KEY (raised_by) REFERENCES employees(id),
+    FOREIGN KEY (reviewed_by) REFERENCES employees(id)
+);
+
+CREATE TABLE audit_cycles (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(150) NOT NULL,
+    target_department_id INT NULL,
+    target_location VARCHAR(150) NULL,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    status ENUM('Draft', 'Active', 'Closed') DEFAULT 'Draft',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE audit_assignments (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    audit_cycle_id INT NOT NULL,
+    auditor_id INT NOT NULL,
+    FOREIGN KEY (audit_cycle_id) REFERENCES audit_cycles(id) ON DELETE CASCADE,
+    FOREIGN KEY (auditor_id) REFERENCES employees(id)
+);
+
+CREATE TABLE audit_results (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    audit_cycle_id INT NOT NULL,
+    asset_id INT NOT NULL,
+    auditor_id INT NOT NULL,
+    verification_status ENUM('Verified', 'Missing', 'Damaged') NOT NULL,
+    notes TEXT NULL,
+    verified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (audit_cycle_id) REFERENCES audit_cycles(id),
+    FOREIGN KEY (asset_id) REFERENCES assets(id),
+    FOREIGN KEY (auditor_id) REFERENCES employees(id),
+    UNIQUE KEY unique_asset_audit (audit_cycle_id, asset_id)
+);
+
+
+-- ============================================================================
+-- 6. SYSTEM LOGS & NOTIFICATIONS
+-- ============================================================================
+
+CREATE TABLE notifications (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    employee_id INT NOT NULL,
+    title VARCHAR(150) NOT NULL,
+    message TEXT NOT NULL,
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
+);
+
+CREATE TABLE activity_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    employee_id INT NOT NULL,
+    action VARCHAR(100) NOT NULL,
+    target_table VARCHAR(50) NOT NULL,
+    target_id INT NOT NULL,
+    details TEXT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (employee_id) REFERENCES employees(id)
+);
+
